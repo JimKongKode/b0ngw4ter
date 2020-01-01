@@ -7,8 +7,10 @@
 #include "rom.h"
 #include "cpu.h"
 #include "utils.h"
+
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 432
+
 int main(int argc, char *argv[]) {
 	srand(time(NULL));
 	SDL_Init(SDL_INIT_EVERYTHING);
@@ -49,7 +51,16 @@ int main(int argc, char *argv[]) {
 			cpu.run_mode = 1;
 	}
 
-	uint32_t rom_size = 32768 << header->rom_size;
+	uint32_t rom_size = 0;
+	if (header->romsize <= 0x8)
+		rom_size = 32768 << header->rom_size;
+	else if (header->romsize == 0x52)
+		rom_size = 72 * 32768;
+	else if (header->romsize == 0x53)
+		rom_size = 80 * 32768;
+	else
+		rom_size = 96 * 32768;
+		
 	free(header);
 
 	printf("rom_size: 0x%x\n", rom_size);
@@ -58,9 +69,11 @@ int main(int argc, char *argv[]) {
 	FILE *bootloader = fopen("bootloader.bin", "rb");
 	fread(cpu.addressSpace, 256, 1, bootloader);
 
-	static SDL_Rect pixel;
-	pixel.w = 3;
-	pixel.h = 3;
+	
+	static SDL_Rect rect;
+	rect.w = 3;
+	rect.h = 3;
+	rect.x = 0;
 	bool running = true;
 	while (running) {
 		SDL_Event e;
@@ -76,10 +89,16 @@ int main(int argc, char *argv[]) {
 		for (int i = 0; i < 70224; i++) {
 			uint8_t instructionSize = 0;
 			uint32_t instruction = fetch_opcode(&cpu, &instructionSize);
-			printf("pc: 0x%04x, sp: 0x%04x inst: 0x%08x\n", cpu.pc, cpu.sp, instruction);
+			//printf("pc: 0x%04x, sp: 0x%04x inst: 0x%08x\n", cpu.pc, cpu.sp, instruction);
 			execute_instruction(&cpu, instruction);
 		}
-
+		rect.x++;
+		rect.y = 3;
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+		SDL_RenderClear(renderer);
+		SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+		SDL_RenderFillRect(renderer, &rect);
+		SDL_RenderPresent(renderer);
 		SDL_Delay(targetDelayTime);
 	}
 	SDL_DestroyRenderer(renderer);
