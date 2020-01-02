@@ -1,33 +1,40 @@
 #include "cpu.h"
 static inline void set_flag(gb_cpu_t *cpu, uint8_t bit, bool status);
 
-void init_cpu(gb_cpu_t *cpu, gb_display_t *display) {
+void init_cpu(gb_cpu_t *cpu, gb_ppu_t *ppu) {
 	for (int i = 0; i < 0x10000; i++) {
 		cpu->addressSpace[i] = 0;
 	}
 	cpu->ram = cpu->addressSpace + 0xC000;
-	cpu->display = display;
-	cpu->cycles = 0;
+	cpu->ppu = ppu;
+	cpu->instruction_wait_cycles = 0;
 	cpu->run_mode = 0;
 	cpu->halt = 0;
 	cpu->pc = 0;
 
 	uint8_t *registers[] = {&cpu->a, &cpu->f, &cpu->b, &cpu->c, &cpu->d, &cpu->e, &cpu->h, &cpu->l};
-	cpu->af = &cpu->a;
-	cpu->bc = &cpu->b;
-	cpu->de = &cpu->d;
-	cpu->hl = &cpu->h;
-	for (int i = 0; i < 8; i++)
+	cpu->af = (uint16_t *)&cpu->a;
+	cpu->bc = (uint16_t *)&cpu->b;
+	cpu->de = (uint16_t *)&cpu->d;
+	cpu->hl = (uint16_t *)&cpu->h;
+	uint8_t *cbreg[] = {&cpu->b, &cpu->c, &cpu->d, &cpu->e, &cpu->h, &cpu->l,(cpu->addressSpace + *cpu->hl), &cpu->a};
+	for (int i = 0; i < 8; i++) {
 		*registers[i] = 0;
+		cpu->registers[i] = cbreg[i];
+	}
 }
 
-uint32_t fetch_opcode(gb_cpu_t *cpu, uint8_t *instructionSize) {
+uint32_t fetch_opcode(gb_cpu_t *cpu) {
 
-	static uint8_t _cycle_count_table_1byte[16][16] = {
+	/* 0 is either a nonexistant opcode or it indicates 
+	an opcode with a variable length cycle count, 
+	which is handled in the instruction implementation instead */
+
+	static uint8_t _instruction_cycle_count[16][16] = {
 		{4, 12, 8, 8, 4, 4, 8, 4, 20, 8, 8, 8, 4, 4, 8, 4},
 		{4, 12, 8, 8, 4, 4, 8, 4, 12, 8, 8, 8, 4, 4, 8, 4},
-		{12|8, 12, 8, 8, 4, 4, 8, 4, 12|8, 8, 8, 8, 4, 4, 8, 4},
-		{12|8, 12, 8, 8, 12, 12, 12, 4, 12|8, 8, 8, 8, 4, 4, 8, 4},
+		{0, 12, 8, 8, 4, 4, 8, 4, 0, 8, 8, 8, 4, 4, 8, 4},
+		{0, 12, 8, 8, 12, 12, 12, 4, 0, 8, 8, 8, 4, 4, 8, 4},
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
@@ -36,17 +43,18 @@ uint32_t fetch_opcode(gb_cpu_t *cpu, uint8_t *instructionSize) {
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
 		{4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4},
-		{20|8, 12, 16|12, 16, 24|12, 16, 8, 16, 20|8, 16, 16|12, 4, 24|12, 24, 8, 16},
-		{20|8, 12, 16|12, 0, 24|12, 16, 8, 16, 20|8, 16, 16|12, 0, 24|12, 0, 8, 16},
+		{0, 12, 0, 16, 0, 16, 8, 16, 0, 16, 0, 4, 0, 24, 8, 16},
+		{0, 12, 0, 0, 0, 16, 8, 16, 0, 16, 0, 0, 0, 0, 8, 16},
 		{12, 12, 8, 0, 0, 16, 8, 16, 16, 4, 16, 0, 0, 0, 8, 16},
 		{12, 12, 8, 4, 0, 16, 8, 16, 12, 8, 16, 4, 0, 0, 8, 16}
 	};
 
 	static uint8_t _instruction_byte_size[16][16] = {
+		//0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F
 		{1, 3, 1, 1, 1, 1, 2, 1, 3, 1, 1, 1, 1, 1, 2, 1},
+		{1, 3, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1},
 		{2, 3, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1},
 		{2, 3, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1},
-		{2, 3, 1, 1, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
@@ -55,31 +63,31 @@ uint32_t fetch_opcode(gb_cpu_t *cpu, uint8_t *instructionSize) {
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
 		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-		{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 2, 1},
+		{1, 1, 3, 3, 3, 1, 2, 1, 1, 1, 3, 2, 3, 3, 2, 1},
 		{1, 1, 3, 0, 3, 1, 2, 1, 1, 1, 3, 0, 3, 0, 2, 1},
-		{2, 1, 2, 0, 0, 1, 2, 1, 2, 1, 3, 0, 0, 0, 3, 1},
-		{2, 1, 2, 1, 0, 1, 2, 1, 2, 1, 3, 1, 0, 0, 2, 1}
+		{2, 1, 1, 0, 0, 1, 2, 1, 2, 1, 3, 0, 0, 0, 3, 1},
+		{2, 1, 1, 1, 0, 1, 2, 1, 2, 1, 3, 1, 0, 0, 2, 1}
 	};
-
-	uint8_t opcode = cpu->addressSpace[cpu->pc];
+	register uint8_t opcode = cpu->addressSpace[cpu->pc];
 	uint8_t opcodeHeader = opcode >> 4; // 0x0011
 	uint8_t opcodeFooter = opcode & 0xf;
-	*instructionSize = _instruction_byte_size[opcodeHeader][opcodeFooter];
+	uint8_t instructionSize = _instruction_byte_size[opcodeHeader][opcodeFooter];
+	cpu->instruction_wait_cycles = _instruction_cycle_count[opcodeHeader][opcodeFooter];
 	uint32_t final = opcode << 24; //0011 0000 0000 0000
 
-	if (*instructionSize > 1) {
-		final |= cpu->addressSpace[cpu->pc + 1] << 16;
-		if (*instructionSize > 2)
-			final |= cpu->addressSpace[cpu->pc + 2] << 8;
+	if (instructionSize > 1) {
+		final |= instructionSize == 3 ? cpu->addressSpace[cpu->pc + 2] << 16 : cpu->addressSpace[cpu->pc + 1] << 16;
+		if (instructionSize > 2)
+			final |= cpu->addressSpace[cpu->pc + 1] << 8;
 	}
 
-	cpu->pc += *instructionSize;
+	cpu->pc += instructionSize;
 	return final;
 }
 
 void execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
-	if (instruction & 0xff00 == 0xcb00)
-		_execute_prefix_instruction(cpu, instruction & 0x00ff0000 >> 16);
+	if ((instruction & 0xff000000) == 0xcb000000)
+		_execute_prefix_instruction(cpu, (instruction & 0x00ff0000) >> 16);
 	else
 		_execute_instruction(cpu, instruction);
 }
@@ -87,9 +95,13 @@ void execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 static inline void set_flag(gb_cpu_t *cpu, uint8_t bit, bool status) {
 	cpu->f ^= (-status ^ cpu->f) & (1UL << bit);	
 }
+static inline void set_bit_on(uint8_t value, uint8_t bit, bool status) {
+	value ^= (-status ^ value) & (1UL << bit);	
+}
 static inline bool get_flag_on(gb_cpu_t *cpu, uint8_t bit) {
 	return (cpu->f >> bit) & 1U;
 }
+
 static inline bool get_bit_on(uint8_t value, uint8_t bit) {
 	return (value >> bit) & 1U;
 }
@@ -103,10 +115,9 @@ static void _stop() {
 static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 	register uint8_t n1 = (instruction & 0xf0000000) >> 28;
 	register uint8_t n2 = (instruction & 0x0f000000) >> 24;
-
-	uint16_t immw = instruction & 0x00ffff00 >> 8;
-	uint8_t imm1 = instruction & 0x00ff0000 >> 16;
-	//uint8_t imm2 = instruction & 0x0000ff00 >> 8;
+	
+	uint16_t immw = (instruction & 0x00ffff00) >> 8;
+	uint8_t imm1 = (instruction & 0x00ff0000) >> 16;
 	int8_t simm1 = (int8_t)imm1;
 	// https://www.pastraiser.com/cpu/gameboy/gameboy_opcodes.html
 
@@ -148,7 +159,7 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					set_flag(cpu, C, get_bit_on(cpu->a, 7));
 					set_flag(cpu, H, 0);
 					set_flag(cpu, N, 0);
-					cpu->a << 1;
+					cpu->a <<= 1;
 					set_flag(cpu, Z, cpu->a == 0);
 					break;
 				}
@@ -277,8 +288,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 		case 0x2: {
 			switch (n2) {
 				case 0x0: {
-					if (!get_flag_on(cpu, Z))
+					if (!get_flag_on(cpu, Z)) {
 						cpu->pc += simm1;
+						cpu->instruction_wait_cycles = 12;
+					} else {
+						cpu->instruction_wait_cycles = 8;
+					}
 
 					break;
 				}
@@ -287,18 +302,18 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x2: {
-					*(cpu->hl) = cpu->a;
-					*(cpu->hl)++;
+					*cpu->hl = cpu->a;
+					(*cpu->hl)++;
 					break;
 				}
 				case 0x3: {
-					*(cpu->hl)++;
+					(*cpu->hl)++;
 					break;
 				}
 				case 0x4: {
 					register uint16_t orig = cpu->h++;
 
-					if (get_bit_on(cpu->h, 4) ^ get_bit_on(orig, 4) == 0)
+					if ((get_bit_on(cpu->h, 4) ^ get_bit_on(orig, 4)) == 0)
 						set_flag(cpu, H, 1);
 
 					if (!cpu->h)
@@ -328,12 +343,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 						set_flag(cpu, Z, 1);
 
 					register bool needed = 0;
-					if (cpu->a & 0xf > 0x9 || get_flag_on(cpu, H)) {
+					if ((cpu->a & 0xf) > 0x9 || get_flag_on(cpu, H)) {
 						cpu->a += 0x6;
 						needed = 1;
 					}
 
-					if (cpu->a & 0xf0 >> 0xf > 0x9 || get_flag_on(cpu, C)) {
+					if ((cpu->a & 0xf0) >> 0xf > 0x9 || get_flag_on(cpu, C)) {
 						cpu->a += 0x60;
 						needed = 1;
 					}
@@ -343,8 +358,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x8: {
-					if (get_flag_on(cpu, Z))
+					if (get_flag_on(cpu, Z)) {
 						cpu->pc += simm1;
+						cpu->instruction_wait_cycles = 12;
+					} else {
+						cpu->instruction_wait_cycles = 8;
+					}
 						
 					break;
 				}
@@ -362,18 +381,18 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0xA: {
-					cpu->a = *(cpu->hl);
-					*(cpu->hl)++;
+					cpu->a = *cpu->hl;
+					(*cpu->hl)++;
 					break;
 				}
 				case 0xB: {
-					*(cpu->hl)--;
+					(*cpu->hl)--;
 					break;
 				}
 				case 0xC: {
 					register uint16_t orig = cpu->l++;
 
-					if (get_bit_on(cpu->l, 4) ^ get_bit_on(orig, 4) == 0)
+					if ((get_bit_on(cpu->l, 4) ^ get_bit_on(orig, 4)) == 0)
 						set_flag(cpu, H, 1);
 
 					if (!cpu->l)
@@ -410,8 +429,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 		case 0x3: {
 			switch (n2) {
 				case 0x0: {
-					if (!get_flag_on(cpu, C))
+					if (!get_flag_on(cpu, C)) {
 						cpu->pc += simm1;
+						cpu->instruction_wait_cycles = 12;
+					} else {
+						cpu->instruction_wait_cycles = 8;
+					}
 
 					break;
 				}
@@ -420,8 +443,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x2: {
-					if (!get_flag_on(cpu, C))
-					
+					*cpu->hl = cpu->a;
+					(*cpu->hl)--;
 					break;
 				}
 				case 0x3: {
@@ -429,46 +452,66 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x4: {
+					(*cpu->hl)++;
 					break;
 				}
 				case 0x5: {
+					(*cpu->hl)--;
 					break;
 				}
 				case 0x6: {
+					(*cpu->hl) = imm1;
 					break;
 				}
 				case 0x7: {
+					set_flag(cpu, C, 1);
+					set_flag(cpu, N, 0);
+					set_flag(cpu, H, 0);
 					break;
 				}
 				case 0x8: {
-					if (get_flag_on(cpu, C))
+					if (get_flag_on(cpu, C)) {
 						cpu->pc += simm1;
+						cpu->instruction_wait_cycles = 12;
+					} else {
+						cpu->instruction_wait_cycles = 8;
+					}
 						
 					break;
 				}
 				case 0x9: {
+					(*cpu->hl) += sp;
 					break;
 				}
 				case 0xA: {
+					cpu->a = *cpu->hl;
+					(*cpu->hl)--;
 					break;
 				}
 				case 0xB: {
+					cpu->sp--;
 					break;
 				}
 				case 0xC: {
+					cpu->a++;
 					break;
 				}
 				case 0xD: {
+					if (--cpu->a & 0xf == 0xf)
+						set_flag(cpu, H, 1);
+
+					set_flag(cpu, N, 1);
+					set_flag(cpu, Z, !cpu->a);
 					break;
 				}
 				case 0xE: {
+					cpu->a = imm1;
 					break;
 				}
 				case 0xF: {
 					set_flag(cpu, C, ~get_flag_on(cpu, C));
 					set_flag(cpu, N, 0);
 					set_flag(cpu, H, 0);
-					cpu->cycles = 4;
 					break;
 				}
 			}
@@ -991,129 +1034,56 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 			break;
 		}
 		case 0xA: {
-			switch (n2) {
-				case 0x0: {
-					break;
-				}
-				case 0x1: {
-					break;
-				}
-				case 0x2: {
-					break;
-				}
-				case 0x3: {
-					break;
-				}
-				case 0x4: {
-					break;
-				}
-				case 0x5: {
-					break;
-				}
-				case 0x6: {
-					break;
-				}
-				case 0x7: {
-					break;
-				}
-				case 0x8: {
-					break;
-				}
-				case 0x9: {
-					break;
-				}
-				case 0xA: {
-					break;
-				}
-				case 0xB: {
-					break;
-				}
-				case 0xC: {
-					break;
-				}
-				case 0xD: {
-					break;
-				}
-				case 0xE: {
-					break;
-				}
-				case 0xF: {
-					break;
-				}
-			}
-
 			set_flag(cpu, N, 0);
-			set_flag(cpu, H, n1 < 0x8 ? 1 : 0);
 			set_flag(cpu, C, 0);
+			if (n2 < 0x8) {
+				uint8_t *reg = n2 == 0x6 ? cpu->addressSpace + *(cpu->hl) : cpu->registers[n2];
+				set_flag(cpu, H, 1);
+				cpu->a = (cpu->a && *reg);
+			} else {
+				uint8_t *reg = n2 == 0xE ? cpu->addressSpace + *(cpu->hl) : cpu->registers[n2 - 8];
+				set_flag(cpu, H, 0);
+				cpu->a = (!cpu->a != !*reg);
+			}
+			
+			set_flag(cpu, Z, cpu->a == 0);
 			break;
 		}
 		case 0xB: {
-			switch (n2) {
-				case 0x0: {
-					break;
-				}
-				case 0x1: {
-					break;
-				}
-				case 0x2: {
-					break;
-				}
-				case 0x3: {
-					break;
-				}
-				case 0x4: {
-					break;
-				}
-				case 0x5: {
-					break;
-				}
-				case 0x6: {
-					break;
-				}
-				case 0x7: {
-					break;
-				}
-				case 0x8: {
-					break;
-				}
-				case 0x9: {
-					break;
-				}
-				case 0xA: {
-					break;
-				}
-				case 0xB: {
-					break;
-				}
-				case 0xC: {
-					break;
-				}
-				case 0xD: {
-					break;
-				}
-				case 0xE: {
-					break;
-				}
-				case 0xF: {
-					break;
-				}
-			}
-
-			set_flag(cpu, N, n1 > 0x8 ? 0 : 1);
-			if (n1 >= 0x8)
-			{
-				set_flag(cpu, H, 1);
+			if (n2 < 0x8) {
+				uint8_t *reg = n2 == 0x6 ? cpu->addressSpace + *(cpu->hl) : cpu->registers[n2];
+				
+				set_flag(cpu, N, 0);
+				set_flag(cpu, H, 0);
 				set_flag(cpu, C, 0);
+				
+				cpu->a = (cpu->a || *reg);
+				set_flag(cpu, Z, cpu->a == 0);
+			} else {
+				uint8_t *reg = n2 == 0xE ? cpu->addressSpace + *(cpu->hl) : cpu->registers[n2 - 8];
+
+				if (cpu->a == *reg)
+					set_flag(cpu, Z, 1);
+
+				if (cpu-> a & 0xf < *reg & 0xf)
+					set_flag(cpu, H, 1);
+
+				if (cpu->a < *reg)
+					set_flag(cpu, C, 1);
+
+				set_flag(cpu, N, 1);
 			}
-			
 			break;
 		}
 		case 0xC: {
 			switch (n2) {
 				case 0x0: {
 					if (!get_flag_on(cpu, Z)) {
-						cpu->pc = cpu->addressSpace[cpu->sp] << 8 | cpu->addressSpace[cpu->sp + 1];
+						cpu->pc = (cpu->addressSpace[cpu->sp] << 8) | cpu->addressSpace[cpu->sp + 1];
 						cpu->sp += 2;
+						cpu->instruction_wait_cycles = 20;
+					} else {
+						cpu->instruction_wait_cycles = 8;
 					}
 
 					break;
@@ -1125,8 +1095,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x2: {
-					if (!get_flag_on(cpu, Z))
+					if (!get_flag_on(cpu, Z)) {
 						cpu->pc = immw;
+						cpu->instruction_wait_cycles = 16;
+					} else {
+						cpu->instruction_wait_cycles = 12;
+					}
 						
 					break;
 				}
@@ -1137,11 +1111,15 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				case 0x4: {
 					if (!get_flag_on(cpu, Z)) {
 						cpu->sp -= 2;
-						cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+						cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 						cpu->pc = immw;
+						cpu->instruction_wait_cycles = 24;
+					} else {
+						cpu->instruction_wait_cycles = 12;
 					}
+					 
 
 					break;
 				}
@@ -1157,8 +1135,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0x7: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 4;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0;
 					break;
@@ -1166,44 +1144,56 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				case 0x8: {
 					if (get_flag_on(cpu, Z)) {
 						uint16_t jmpAddress = cpu->addressSpace[cpu->sp];
-						jmpAddress >>= 8;
+						jmpAddress <<= 8;
 						jmpAddress |= cpu->addressSpace[cpu->sp + 1];
 						cpu->sp += 2;
 						cpu->pc = jmpAddress;
-					}	
+						cpu->instruction_wait_cycles = 20;
+					} else {
+						cpu->instruction_wait_cycles = 8;
+					}
 					break;
 				}
 				case 0x9: {
-					uint16_t jmpAddress = cpu->addressSpace[cpu->sp];					
+					uint16_t jmpAddress = cpu->addressSpace[cpu->sp];
+					jmpAddress <<= 8;
+					jmpAddress |= cpu->addressSpace[cpu->sp + 1];
 					cpu->sp += 2;
 					cpu->pc = jmpAddress;
 					break;
 				}
 				case 0xA: {
-					if (get_flag_on(cpu, C))
+					if (get_flag_on(cpu, C)) {
 						cpu->pc = imm1;
+						cpu->instruction_wait_cycles = 16;
+					} else {
+						cpu->instruction_wait_cycles = 12;
+					}
 						
 					break;
 				}
 				case 0xB: {
-					// CB prefix, should never get here
+					// cb, should never get here
 					break;
 				}
 				case 0xC: {
 					if (get_flag_on(cpu, Z)) {
 						cpu->sp -= 2;
-						cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+						cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 						cpu->pc = immw;
+						cpu->instruction_wait_cycles = 24;
+					} else {
+						cpu->instruction_wait_cycles = 12;
 					}
 
 					break;
 				}
 				case 0xD: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = immw;
 					break;
@@ -1214,8 +1204,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0xF: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x8;
 					break;
@@ -1227,8 +1217,11 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 			switch (n2) {
 				case 0x0: {
 					if (!get_flag_on(cpu, C)) {
-						cpu->pc = cpu->addressSpace[cpu->sp] << 8 | cpu->addressSpace[cpu->sp + 1];
+						cpu->pc = (cpu->addressSpace[cpu->sp] << 8) | cpu->addressSpace[cpu->sp + 1];
 						cpu->sp += 2;
+						cpu->instruction_wait_cycles = 20;
+					} else {
+						cpu->instruction_wait_cycles = 8;
 					}
 					break;
 				}
@@ -1239,8 +1232,12 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 					break;
 				}
 				case 0x2: {
-					if (!get_flag_on(cpu, C))
+					if (!get_flag_on(cpu, C)) {
 						cpu->pc = imm1;
+						cpu->instruction_wait_cycles = 16;
+					} else {
+						cpu->instruction_wait_cycles = 12;
+					}
 
 					break;
 				}
@@ -1251,10 +1248,13 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				case 0x4: {
 					if (!get_flag_on(cpu, C)) {
 						cpu->sp -= 2;
-						cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+						cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 						cpu->pc = immw;
+						cpu->instruction_wait_cycles = 24;
+					} else {
+						cpu->instruction_wait_cycles = 12;
 					}
 					break;
 				}
@@ -1270,31 +1270,37 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0x7: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x10;
 					break;
 				}
 				case 0x8: {
 					if (get_flag_on(cpu, C)) {
-						cpu->pc = cpu->addressSpace[cpu->sp] << 8 | cpu->addressSpace[cpu->sp + 1];
+						cpu->pc = (cpu->addressSpace[cpu->sp] << 8) | cpu->addressSpace[cpu->sp + 1];
 						cpu->sp += 2;
+						cpu->instruction_wait_cycles = 20;
+					} else {
+						cpu->instruction_wait_cycles = 8;
 					}
 
 					break;
 				}
 				case 0x9: {
-					cpu->pc = cpu->addressSpace[cpu->sp] << 8 | cpu->addressSpace[cpu->sp + 1];
+					cpu->pc = (cpu->addressSpace[cpu->sp] << 8) | cpu->addressSpace[cpu->sp + 1];
 					cpu->sp += 2;
 
 					cpu->interrupts = 1;
 					break;
 				}
 				case 0xA: {
-					if (get_flag_on(cpu, C))
+					if (get_flag_on(cpu, C)) {
 						cpu->pc = imm1;
-						
+						cpu->instruction_wait_cycles = 16;
+					} else {
+						cpu->instruction_wait_cycles = 12;
+					}
 					break;
 				}
 				case 0xB: {
@@ -1304,10 +1310,13 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				case 0xC: {
 					if (get_flag_on(cpu, C)) {
 						cpu->sp -= 2;
-						cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+						cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+						cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 						cpu->pc = immw;
+						cpu->instruction_wait_cycles = 24;
+					} else {
+						cpu->instruction_wait_cycles = 12;
 					}
 
 					break;
@@ -1322,8 +1331,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0xF: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x18;
 					break;
@@ -1334,7 +1343,7 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 		case 0xE: {
 			switch (n2) {
 				case 0x0: {
-					cpu->addressSpace[0xff00 + imm1] = cpu->a;
+					cpu->a = cpu->addressSpace[0xFF00 + imm1];
 					break;
 				}
 				case 0x1: {
@@ -1367,8 +1376,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0x7: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x20;
 					break;
@@ -1403,8 +1412,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0xF: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x28;
 					break;
@@ -1448,8 +1457,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0x7: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x30;
 					break;
@@ -1484,8 +1493,8 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 				}
 				case 0xF: {
 					cpu->sp -= 2;
-					cpu->addressSpace[cpu->sp] = cpu->pc & 0xf0 >> 8;
-					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xf;
+					cpu->addressSpace[cpu->sp] = (cpu->pc & 0xff00) >> 8;
+					cpu->addressSpace[cpu->sp + 1] = cpu->pc & 0xff;
 
 					cpu->pc = 0x38;
 					break;
@@ -1498,25 +1507,109 @@ static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction) {
 }
 
 static void _execute_prefix_instruction(gb_cpu_t *cpu, uint8_t opcode) {
-	//register uint8_t opnext & 0b11000000 >> 6
-	switch (opcode & 0b11000000 >> 6) {
+	register uint8_t n1 = (opcode & 0xf0) >> 4;
+	register uint8_t n2 = opcode & 0x0f;
+	register uint8_t *reg = cpu->registers[(n2 % 8)];
+	if (n2 % 8 == 6) {
+		reg = cpu->addressSpace + *(cpu->hl);
+		cpu->instruction_wait_cycles = 16;
+	} else {
+		cpu->instruction_wait_cycles = 8;
+	}
+
+	switch (n1) {
 		case 0x0: {
-			// rot[y] r[z]
+			set_flag(cpu, N, 0);
+			set_flag(cpu, H, 0);
+
+			if (n2 < 0x8) {
+				bool bit = get_bit_on(*reg, 7);
+				set_flag(cpu, C, bit);
+				*reg = (*reg << 1) | bit;
+			} else {
+				bool bit = get_bit_on(*reg, 0);
+				set_flag(cpu, C, bit);
+				*reg = (*reg >> 1) | (bit << 7);
+			}
+			
+			set_flag(cpu, Z, *reg == 0);
 			break;
 		}
-
 		case 0x1: {
-			// bit y, r[z]
+			set_flag(cpu, N, 0);
+			set_flag(cpu, H, 0);
+			if (n2 < 0x8) {
+				bool bit = get_flag_on(cpu, C);
+				set_flag(cpu, C, get_bit_on(*reg, 7));
+				*reg = ((*reg) << 1) | bit;
+			} else {
+				bool bit = get_bit_on(*reg, 0);
+				*reg = ((*reg) >> 1) | (get_flag_on(cpu, C) << 7);
+				set_flag(cpu, C, bit);
+			}
+
+			set_flag(cpu, Z, (*reg) == 0);
 			break;
 		}
-
 		case 0x2: {
-			// res y, r[z]
+			set_flag(cpu, N, 0);
+			set_flag(cpu, H, 0);
+			if (n2 < 0x8) {
+				set_flag(cpu, C, get_bit_on(*reg, 7));
+				*reg <<= 1;
+				set_bit_on(*reg, 0, 0);
+			} else {
+				bool bit = get_bit_on(*reg, 7);
+				set_flag(cpu, C, get_bit_on(*reg, 0));
+				*reg >>= 1;
+				set_bit_on(*reg, 7, bit);
+			}
+			set_flag(cpu, Z, *reg == 0);
+			break;
+		}
+		case 0x3: {
+			set_flag(cpu, N, 0);
+			set_flag(cpu, H, 0);
+			if (n2 < 0x8) {
+				set_flag(cpu, C, 0);
+				uint8_t newValue = ((*reg << 4) & 0xf0) | ((*reg >> 4) & 0x0f);
+				*reg = newValue;
+			} else {
+				bool bit = get_bit_on(*reg, 0);
+				set_flag(cpu, C, bit);
+				*reg >>= 1;
+				set_bit_on(*reg, 7, 0);
+			}
+			set_flag(cpu, Z, *reg == 0);
+			break;
+		}
+		case 0x4:
+		case 0x5:
+		case 0x6:
+		case 0x7: {
+			uint8_t bit = n2 < 0x8 ? (n1 - 0x4) * 2 : (n1 - 0x4) * 2 + 1;
+			bool status = get_bit_on(*reg, bit);
+			set_flag(cpu, N, 0);
+			set_flag(cpu, H, 1);
+			set_flag(cpu, Z, !status);
+			break;
+		}
+		
+		case 0x8:
+		case 0x9:
+		case 0xA:
+		case 0xB: {
+			uint8_t bit = n2 < 0x8 ? (n1 - 0x4) * 2 : (n1 - 0x4) * 2 + 1;
+			set_bit_on(*reg, bit, 0);
 			break;
 		}
 
-		case 0x3: {
-			// set y, r[z]
+		case 0xC:
+		case 0xD:
+		case 0xE:
+		case 0xF: {
+			uint8_t bit = n2 < 0x8 ? (n1 - 0x4) * 2 : (n1 - 0x4) * 2 + 1;
+			set_bit_on(*reg, bit, 1);
 			break;
 		}
 	}

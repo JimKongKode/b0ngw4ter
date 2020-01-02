@@ -3,7 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "display.h"
+#include <stdlib.h>
+#include "ppu.h"
 
 #define C 4
 #define H 5
@@ -16,8 +17,9 @@
 #define HL 3
 
 typedef struct {
-	gb_display_t *display;
-	uint8_t cycles;
+	gb_ppu_t *ppu;
+
+	uint8_t instruction_wait_cycles;
 	uint8_t run_mode;
 	uint16_t *af;
 	uint16_t *bc;
@@ -37,13 +39,15 @@ typedef struct {
 	bool halt;
 	bool interrupts;
 
+	uint8_t *registers[8];
+
 	uint8_t addressSpace[0x10000];
 	uint8_t *ram;
 } gb_cpu_t;
 
 static inline void set_flag(gb_cpu_t *cpu, uint8_t bit, bool status);
-void init_cpu(gb_cpu_t *cpu, gb_display_t *display);
-uint32_t fetch_opcode(gb_cpu_t *cpu, uint8_t *instructionSize);
+void init_cpu(gb_cpu_t *cpu, gb_ppu_t *ppu);
+uint32_t fetch_opcode(gb_cpu_t *cpu);
 void execute_instruction(gb_cpu_t *cpu, uint32_t instruction);
 static void _execute_instruction(gb_cpu_t *cpu, uint32_t instruction);
 static void _execute_prefix_instruction(gb_cpu_t *cpu, uint8_t next);

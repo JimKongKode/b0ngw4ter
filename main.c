@@ -5,6 +5,7 @@
 #include <time.h>
 #include <SDL2/SDL.h>
 #include "rom.h"
+#include "ppu.h"
 #include "cpu.h"
 #include "utils.h"
 
@@ -36,7 +37,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	gb_cpu_t cpu;
-	gb_display_t display;
+	gb_ppu_t display;
 	init_cpu(&cpu, &display);
 
 	//cpu.display->renderer = 
@@ -52,11 +53,11 @@ int main(int argc, char *argv[]) {
 	}
 
 	uint32_t rom_size = 0;
-	if (header->romsize <= 0x8)
+	if (header->rom_size <= 0x8)
 		rom_size = 32768 << header->rom_size;
-	else if (header->romsize == 0x52)
+	else if (header->rom_size == 0x52)
 		rom_size = 72 * 32768;
-	else if (header->romsize == 0x53)
+	else if (header->rom_size == 0x53)
 		rom_size = 80 * 32768;
 	else
 		rom_size = 96 * 32768;
@@ -69,12 +70,9 @@ int main(int argc, char *argv[]) {
 	FILE *bootloader = fopen("bootloader.bin", "rb");
 	fread(cpu.addressSpace, 256, 1, bootloader);
 
-	
-	static SDL_Rect rect;
-	rect.w = 3;
-	rect.h = 3;
-	rect.x = 0;
 	bool running = true;
+	FILE *dump = fopen("dump.txt", "w+");
+	char x[] = "bcdehlza";
 	while (running) {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
@@ -87,11 +85,23 @@ int main(int argc, char *argv[]) {
 			break;
 		
 		for (int i = 0; i < 70224; i++) {
-			uint8_t instructionSize = 0;
-			uint32_t instruction = fetch_opcode(&cpu, &instructionSize);
-			//printf("pc: 0x%04x, sp: 0x%04x inst: 0x%08x\n", cpu.pc, cpu.sp, instruction);
-			execute_instruction(&cpu, instruction);
+			if (cpu.instruction_wait_cycles == 0) {
+				//printf("pc: 0x%04x ", cpu.pc);
+				uint32_t instruction = fetch_opcode(&cpu);
+				//printf("sp: 0x%04x, inst: 0x%08x, af: 0x%04x, bc: 0x%04x, de: 0x%04x, hl: 0x%04x\n", cpu.sp, instruction, *cpu.af, *cpu.bc, *cpu.de, *cpu.hl);
+				fprintf(dump, "instruction: 0x%x, pc: 0x%x, sp:0x%x\n", instruction, cpu.pc, cpu.sp);
+				for (int i = 0; i < 8; i++) {
+					if (i != 7)
+						fprintf(dump, "%c: 0x%x, ", x[i], *cpu.registers[i]);
+					else
+						fprintf(dump, "f, 0x%x, hl: 0x%x, af: 0x%x, bc: 0x%x, de: 0x%x ", cpu.f, *cpu.hl, *cpu.af, *cpu.bc, *cpu.de);
+				}
+				fprintf(dump, "\n\n");
+				execute_instruction(&cpu, instruction);
+			}
+			cpu.instruction_wait_cycles--;
 		}
+		/*
 		rect.x++;
 		rect.y = 3;
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -99,8 +109,9 @@ int main(int argc, char *argv[]) {
 		SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
 		SDL_RenderFillRect(renderer, &rect);
 		SDL_RenderPresent(renderer);
-		SDL_Delay(targetDelayTime);
+		SDL_Delay(targetDelayTime);*/
 	}
+	fclose(dump);
 	SDL_DestroyRenderer(renderer);
 	SDL_DestroyWindow(main_window);
 	SDL_Quit();
